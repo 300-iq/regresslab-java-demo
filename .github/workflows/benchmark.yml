@@ -1,0 +1,57 @@
+name: RegressLab Java benchmarks
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: regresslab-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout baseline controller
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: controller
+          persist-credentials: false
+      - name: Checkout exact baseline
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+          persist-credentials: false
+      - name: Checkout exact candidate
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Set up Java 21
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          overwrite-settings: false
+      - name: Build, warm up, and benchmark both commits
+        run: python3 controller/run_benchmarks.py --baseline baseline --candidate candidate --output artifacts
+      - name: Publish baseline observations and execution ledger
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: regresslab-baseline-${{ github.run_attempt }}
+          path: artifacts/baseline/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish candidate observations and execution ledger
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: regresslab-candidate-${{ github.run_attempt }}
+          path: artifacts/candidate/*.json
+          if-no-files-found: error
+          retention-days: 30
