@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed, credential-free JMH producer. JSON input is metadata, never executable."""
+"""Fixed, unprivileged JMH producer. JSON input is metadata, never executable."""
 import argparse
 import datetime as dt
 import hashlib
@@ -10,6 +10,7 @@ import pathlib
 import platform
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -27,21 +28,45 @@ def clean_environment():
 
 def execute(command, cwd, log, seconds):
     started, clock = stamp(), time.monotonic()
-    with open(log, "wb") as output:
-        process = subprocess.Popen(command, cwd=cwd, env=clean_environment(), stdout=output,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            code = process.wait(timeout=seconds)
-            status = "COMPLETE" if code == 0 else "BENCHMARK_FAILED"
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            code = process.wait()
-            status = "TIMEOUT"
+    code, error = None, None
+    try:
+        with open(log, "wb") as output:
+            process = subprocess.Popen(command, cwd=cwd, env=clean_environment(), stdout=output,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                code = process.wait(timeout=seconds)
+                status = "COMPLETE" if code == 0 else "BENCHMARK_FAILED"
+            except subprocess.TimeoutExpired:
+                # The parent may exit between wait's deadline and group cleanup.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                code = process.wait()
+                status, error = "TIMEOUT", f"Process exceeded its {seconds}s timeout"
+    except OSError as failure:
+        status, error = "BENCHMARK_FAILED", f"Process could not start: {type(failure).__name__}"
     return {"status": status, "exitCode": code, "startedAt": started, "finishedAt": stamp(),
-            "elapsedMs": max(0, round((time.monotonic() - clock) * 1000)), "error": None}
+            "elapsedMs": max(0, round((time.monotonic() - clock) * 1000)), "error": error}
+
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JMH JSON key")
+        result[key] = value
+    return result
 
 def parse_jmh(path, complete=True):
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    # A PR can influence runner output. Never buffer arbitrary files, follow
+    # symlinks, or block on a named pipe while normalizing measurements.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW), "rb") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("JMH output must be a regular file")
+        data = source.read(1048577)
+    if len(data) > 1048576:
+        raise ValueError("JMH output exceeds 1 MiB")
+    raw = json.loads(data.decode("utf-8"), object_pairs_hook=unique_json_object)
     if not isinstance(raw, list) or len(raw) > 2:
         raise ValueError("Unexpected JMH case list")
     output = []
@@ -113,7 +138,9 @@ def produce(baseline, candidate, destination, event, run_id, attempt):
         if build["status"] == "BENCHMARK_FAILED": build["status"] = "BUILD_FAILED"
         if build["status"] == "COMPLETE":
             check = execute(["java", "-cp", "target/test-classes:target/classes", "dev.regresslab.demo.EventStatisticsTest"], directory, logs / f"{arm.lower()}-correctness.log", 20)
-            if check["status"] != "COMPLETE": build = {**check, "status": "BUILD_FAILED", "error": "Correctness check failed"}
+            if check["status"] != "COMPLETE":
+                build = {**check, "status": "TIMEOUT" if check["status"] == "TIMEOUT" else "BUILD_FAILED",
+                         "error": "Correctness check failed" + (f": {check['error']}" if check["error"] else "")}
         ledger["builds"][arm] = build
     indices = {"BASELINE": 0, "CANDIDATE": 0}
     for arm in ledger["order"]:
@@ -124,6 +151,8 @@ def produce(baseline, candidate, destination, event, run_id, attempt):
         if ledger["builds"][arm]["status"] != "COMPLETE" or any(b["arm"] == arm and b["status"] != "COMPLETE" for b in ledger["blocks"]):
             block.update(status="NOT_RUN", exitCode=None, startedAt=None, finishedAt=None, elapsedMs=0, error="Build or earlier block did not complete")
         else:
+            # A failed process must never inherit earlier invocations' measurements.
+            result_path.unlink(missing_ok=True)
             result = execute(["java", "-jar", "target/benchmarks.jar", "dev.regresslab.demo.EventBenchmarks.*", "-bm", "avgt", "-tu", "ns", "-f", "1", "-wi", str(WARMUPS), "-i", str(ITERATIONS), "-w", "1s", "-r", "1s", "-t", "1", "-foe", "true", "-jvmArgs", " ".join(args), "-rf", "json", "-rff", str(result_path.resolve())], directory, logs / f"{arm.lower()}-{index}.log", 60)
             block.update(result)
             try:
