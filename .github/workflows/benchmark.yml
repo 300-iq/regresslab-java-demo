@@ -37,6 +37,10 @@ jobs:
           distribution: temurin
           java-version: '21'
           overwrite-settings: false
+      - name: Candidate producer regression tests
+        # Proposed producer fixes must be tested even though benchmarking uses the
+        # reviewed base controller. Only PATH is passed to the test environment.
+        run: env -i PATH="$PATH" python3 -m unittest discover -s candidate -p 'test_*.py'
       - name: Build, warm up, and benchmark both commits
         run: python3 controller/run_benchmarks.py --baseline baseline --candidate candidate --output artifacts
       - name: Publish baseline observations and execution ledger
