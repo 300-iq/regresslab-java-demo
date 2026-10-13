@@ -151,6 +151,8 @@ def produce(baseline, candidate, destination, event, run_id, attempt):
         if ledger["builds"][arm]["status"] != "COMPLETE" or any(b["arm"] == arm and b["status"] != "COMPLETE" for b in ledger["blocks"]):
             block.update(status="NOT_RUN", exitCode=None, startedAt=None, finishedAt=None, elapsedMs=0, error="Build or earlier block did not complete")
         else:
+            # A failed process must never inherit earlier invocations' measurements.
+            result_path.unlink(missing_ok=True)
             result = execute(["java", "-jar", "target/benchmarks.jar", "dev.regresslab.demo.EventBenchmarks.*", "-bm", "avgt", "-tu", "ns", "-f", "1", "-wi", str(WARMUPS), "-i", str(ITERATIONS), "-w", "1s", "-r", "1s", "-t", "1", "-foe", "true", "-jvmArgs", " ".join(args), "-rf", "json", "-rff", str(result_path.resolve())], directory, logs / f"{arm.lower()}-{index}.log", 60)
             block.update(result)
             try:

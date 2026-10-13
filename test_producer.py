@@ -80,6 +80,21 @@ class ProducerTests(unittest.TestCase):
             ledger=json.loads((root/"out/baseline/execution.json").read_text())
             self.assertEqual(ledger["builds"]["BASELINE"]["status"],"TIMEOUT")
             self.assertIn("Correctness",ledger["builds"]["BASELINE"]["error"])
+    def test_failed_execution_cannot_reuse_jmh_values_from_an_earlier_invocation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=pathlib.Path(folder)
+            for arm in ("base","candidate"): (root/arm/"src/main/java/dev/regresslab/demo").mkdir(parents=True)
+            logs=root/"out/logs";logs.mkdir(parents=True)
+            for arm in ("baseline","candidate"): (logs/f"{arm}-0-jmh.json").write_text(json.dumps(self.fixture()))
+            event={"repository":{"id":1,"owner":{"login":"test-only"},"name":"test-only"},"pull_request":{"number":1,"title":"TEST ONLY: stale output fixture","base":{"sha":"a"*40,"ref":"main"},"head":{"sha":"b"*40,"ref":"test-only"}}}
+            def checkout(command,cwd,**kwargs): return ("a" if str(cwd).endswith("base") else "b")*40
+            complete={"status":"COMPLETE","exitCode":0,"startedAt":producer.stamp(),"finishedAt":producer.stamp(),"elapsedMs":1,"error":None}
+            failure={**complete,"status":"BENCHMARK_FAILED","exitCode":1}
+            with patch.object(producer.subprocess,"check_output",side_effect=checkout),patch.object(producer,"environment",return_value={}),patch.object(producer,"execute",side_effect=[complete]*4+[failure]*2):
+                self.assertEqual(producer.produce(root/"base",root/"candidate",root/"out",event,2,1),1)
+            ledger=json.loads((root/"out/baseline/execution.json").read_text())
+            self.assertEqual(ledger["blocks"][0]["observations"],[])
+            self.assertEqual(ledger["blocks"][1]["observations"],[])
     def test_publishes_failed_runs_and_build_failure_ledger_without_fake_samples(self):
         with tempfile.TemporaryDirectory() as folder:
             root=pathlib.Path(folder)
