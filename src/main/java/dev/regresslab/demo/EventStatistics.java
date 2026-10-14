@@ -13,6 +13,6 @@ public final class EventStatistics {
         for (String category : categories) counts.merge(category, 1, Integer::sum);
     }
 
-    public int countByCategory(String category) { return counts.getOrDefault(category, 0); }
+    public int countByCategory(String category) { return new HashMap<>(counts).getOrDefault(category, 0); }
     public int distinctCategories() { return counts.size(); }
 }
