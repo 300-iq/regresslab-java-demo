@@ -14,5 +14,5 @@ public final class EventStatistics {
     }
 
     public int countByCategory(String category) { return counts.getOrDefault(category, 0); }
-    public int distinctCategories() { return counts.size(); }
+    public int distinctCategories() { return counts.keySet().stream().sorted().toList().size(); }
 }
